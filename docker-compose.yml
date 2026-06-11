@@ -1,0 +1,225 @@
+services:
+  # ══════════════════════════════════════════
+  # Mosquitto MQTT Broker
+  # ══════════════════════════════════════════
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════
+  # PostgreSQL 数据库
+  # ══════════════════════════════════════════
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-iot_platform}
+      POSTGRES_USER: ${POSTGRES_USER:-iot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iot123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iot}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ══════════════════════════════════════════
+  # Redis 缓存
+  # ══════════════════════════════════════════
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ══════════════════════════════════════════
+  # FastAPI 后端 (使用本地构建的镜像)
+  # ══════════════════════════════════════════
+  backend:
+    image: iot-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-iot}:${POSTGRES_PASSWORD:-iot123}@postgres:5432/${POSTGRES_DB:-iot_platform}"
+      BROKER_HOST: mosquitto
+      BROKER_PORT: 1883
+      BROKER_WS_PORT: 9001
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: '["http://localhost","http://localhost:80","http://localhost:3000"]'
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-change-in-production}
+      OLLAMA_HOST: "http://host.docker.internal:11434"
+      NO_PROXY: "host.docker.internal,backend,mosquitto,localhost,127.0.0.1"
+      no_proxy: "host.docker.internal,backend,mosquitto,localhost,127.0.0.1"
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════
+  # React 前端 (Nginx，使用本地构建的镜像)
+  # ══════════════════════════════════════════
+  frontend:
+    image: iot-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════
+  # 模拟器 - 温度传感器
+  # ══════════════════════════════════════════
+  simulator-temperature:
+    image: iot-simulator
+    command: ["python", "main.py", "--id", "sensor-01", "--type", "temperature", "--interval", "5", "--anomaly", "0.15", "--broker", "mosquitto", "--api", "http://backend:8000"]
+    environment:
+      NO_PROXY: "backend,mosquitto,localhost,127.0.0.1"
+      no_proxy: "backend,mosquitto,localhost,127.0.0.1"
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+    depends_on:
+      backend:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════
+  # 模拟器 - 智能风扇
+  # ══════════════════════════════════════════
+  simulator-fan:
+    image: iot-simulator
+    command: ["python", "main.py", "--id", "fan-01", "--type", "smart_fan", "--interval", "8", "--broker", "mosquitto", "--api", "http://backend:8000"]
+    environment:
+      NO_PROXY: "backend,mosquitto,localhost,127.0.0.1"
+      no_proxy: "backend,mosquitto,localhost,127.0.0.1"
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+    depends_on:
+      backend:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════
+  # 模拟器 - 智能灯
+  # ══════════════════════════════════════════
+  simulator-light:
+    image: iot-simulator
+    command: ["python", "main.py", "--id", "light-01", "--type", "smart_light", "--interval", "10", "--broker", "mosquitto", "--api", "http://backend:8000"]
+    environment:
+      NO_PROXY: "backend,mosquitto,localhost,127.0.0.1"
+      no_proxy: "backend,mosquitto,localhost,127.0.0.1"
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+    depends_on:
+      backend:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════
+  # 模拟器 - 湿度传感器
+  # ══════════════════════════════════════════
+  simulator-humidity:
+    image: iot-simulator
+    command: ["python", "main.py", "--id", "sensor-02", "--type", "humidity", "--interval", "6", "--anomaly", "0.1", "--broker", "mosquitto", "--api", "http://backend:8000"]
+    environment:
+      NO_PROXY: "backend,mosquitto,localhost,127.0.0.1"
+      no_proxy: "backend,mosquitto,localhost,127.0.0.1"
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+    depends_on:
+      backend:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════
+  # Prometheus 监控
+  # ══════════════════════════════════════════
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════
+  # Grafana 可视化
+  # ══════════════════════════════════════════
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      NO_PROXY: "prometheus,backend,mosquitto,localhost,127.0.0.1"
+      no_proxy: "prometheus,backend,mosquitto,localhost,127.0.0.1"
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  mosquitto_data:
+  pg_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
